@@ -166,10 +166,10 @@ if HAS_POLL and not FORCE_USE_SELECT:
             if hasattr(f, "fileno"):
                 fd = f.fileno()
                 del self.fd_lookup[fd]
-                del self.fo_lookup[f]
             else:
                 del self.fd_lookup[f]
-                del self.fo_lookup[f]
+
+            del self.fo_lookup[f]
 
         def _get_file_descriptor(self, f):
             return self.fo_lookup.get(f)
@@ -253,13 +253,9 @@ else:
 
         def poll(self, timeout):
             _in, _out, _err = select.select(self.rlist, self.wlist, self.xlist, timeout)
-            results = []
-            for f in _in:
-                results.append((f, POLLER_EVENT_READ))
-            for f in _out:
-                results.append((f, POLLER_EVENT_WRITE))
-            for f in _err:
-                results.append((f, POLLER_EVENT_ERROR))
+            results = [(f, POLLER_EVENT_READ) for f in _in]
+            results.extend((f, POLLER_EVENT_WRITE) for f in _out)
+            results.extend((f, POLLER_EVENT_ERROR) for f in _err)
             return results
 
 
@@ -272,9 +268,7 @@ def encode_to_py3bytes_or_py2str(s):
 
     if IS_PY3:
         # if we're already bytes, do nothing
-        if isinstance(s, bytes):
-            pass
-        else:
+        if not isinstance(s, bytes):
             s = str(s)
             try:
                 s = bytes(s, DEFAULT_ENCODING)
@@ -330,7 +324,7 @@ class ErrorReturnCodeMeta(type):
     """
 
     def __subclasscheck__(self, o):
-        other_bases = set([b.__name__ for b in o.__bases__])
+        other_bases = {b.__name__ for b in o.__bases__}
         return self.__name__ in other_bases or o.__name__ == self.__name__
 
 
@@ -371,15 +365,13 @@ class ErrorReturnCode(Exception):
         exc_stdout = self.stdout
         if truncate:
             exc_stdout = exc_stdout[:self.truncate_cap]
-            out_delta = len(self.stdout) - len(exc_stdout)
-            if out_delta:
+            if out_delta := len(self.stdout) - len(exc_stdout):
                 exc_stdout += ("... (%d more, please see e.stdout)" % out_delta).encode()
 
         exc_stderr = self.stderr
         if truncate:
             exc_stderr = exc_stderr[:self.truncate_cap]
-            err_delta = len(self.stderr) - len(exc_stderr)
-            if err_delta:
+            if err_delta := len(self.stderr) - len(exc_stderr):
                 exc_stderr += ("... (%d more, please see e.stderr)" % err_delta).encode()
 
         msg_tmpl = unicode("\n\n  RAN: {cmd}\n\n  STDOUT:\n{stdout}\n\n  STDERR:\n{stderr}")
@@ -456,8 +448,7 @@ def get_exc_from_name(name):
     try:
         return rc_exc_cache[name]
     except KeyError:
-        m = rc_exc_regex.match(name)
-        if m:
+        if m := rc_exc_regex.match(name):
             base = m.group(1)
             rc_or_sig_name = m.group(2)
 
@@ -491,7 +482,7 @@ def get_rc_exc(rc):
         base = ErrorReturnCode
     else:
         signame = SIGNAL_MAPPING[abs(rc)]
-        name = "SignalException_" + signame
+        name = f"SignalException_{signame}"
         base = SignalException
 
     exc = ErrorReturnCodeMeta(name, (base,), {"exit_code": rc})
@@ -523,8 +514,7 @@ class GlobResults(list):
 
 
 def glob(path, *args, **kwargs):
-    expanded = GlobResults(path, _old_glob(path, *args, **kwargs))
-    return expanded
+    return GlobResults(path, _old_glob(path, *args, **kwargs))
 
 
 glob_module.glob = glob
@@ -577,15 +567,10 @@ def which(program, paths=None):
 
 def resolve_command_path(program):
     path = which(program)
+    if not path and "_" in program:
+        path = which(program.replace("_", "-"))
     if not path:
-        # our actual command might have a dash in it, but we can't call
-        # that from python (we have to use underscores), so we'll check
-        # if a dash version of our underscore command exists and use that
-        # if it does
-        if "_" in program:
-            path = which(program.replace("_", "-"))
-        if not path:
-            return None
+        return None
     return path
 
 
@@ -634,8 +619,8 @@ class Logger(object):
         return context or ""
 
     def get_child(self, name, context):
-        new_name = self.name + "." + name
-        new_context = self.context + "." + context
+        new_name = f'{self.name}.{name}'
+        new_context = f'{self.context}.{context}'
         return Logger(new_name, new_context)
 
     def info(self, msg, *a):
@@ -652,11 +637,7 @@ class Logger(object):
 
 
 def default_logger_str(cmd, call_args, pid=None):
-    if pid:
-        s = "<Command %r, pid %d>" % (cmd, pid)
-    else:
-        s = "<Command %r>" % cmd
-    return s
+    return "<Command %r, pid %d>" % (cmd, pid) if pid else "<Command %r>" % cmd
 
 
 class RunningCommand(object):
@@ -737,8 +718,7 @@ class RunningCommand(object):
         if call_args["err_to_out"]:
             stderr = OProc.STDOUT
 
-        done_callback = call_args["done"]
-        if done_callback:
+        if done_callback := call_args["done"]:
             call_args["done"] = partial(done_callback, self)
 
         # set up which stream should write to the pipe
@@ -809,27 +789,22 @@ class RunningCommand(object):
                 while waited_for <= timeout:
                     alive, exit_code = self.process.is_alive()
 
-                    # if we're alive, we need to wait some more, but let's sleep before we poll again
-                    if alive:
-                        time.sleep(sleep_amt)
-                        waited_for += sleep_amt
-
-                    # but if we're not alive, we're done waiting
-                    else:
+                    if not alive:
                         break
+
+                    time.sleep(sleep_amt)
+                    waited_for += sleep_amt
 
                 # if we've made it this far, and we're still alive, then it means we timed out waiting
                 if alive:
                     raise TimeoutException(None, self.ran)
 
-                # if we didn't time out, we fall through and let the rest of the code handle exit_code.
-                # notice that we set _waited_until_completion here, only if we didn't time out. this allows us to
-                # re-wait again on timeout, if we catch the TimeoutException in the parent frame
-                self._waited_until_completion = True
-
             else:
                 exit_code = self.process.wait()
-                self._waited_until_completion = True
+            # if we didn't time out, we fall through and let the rest of the code handle exit_code.
+            # notice that we set _waited_until_completion here, only if we didn't time out. this allows us to
+            # re-wait again on timeout, if we catch the TimeoutException in the parent frame
+            self._waited_until_completion = True
 
             if self.process.timed_out:
                 # if we timed out, our exit code represents a signal, which is
@@ -837,15 +812,14 @@ class RunningCommand(object):
                 # TimeoutException
                 raise TimeoutException(-exit_code, self.ran)
 
-            else:
-                self.handle_command_exit_code(exit_code)
+            self.handle_command_exit_code(exit_code)
 
-                # if an iterable command is using an instance of OProc for its stdin,
-                # wait on it.  the process is probably set to "piped", which means it
-                # won't be waited on, which means exceptions won't propagate up to the
-                # main thread.  this allows them to bubble up
-                if self.process._stdin_process:
-                    self.process._stdin_process.command.wait()
+            # if an iterable command is using an instance of OProc for its stdin,
+            # wait on it.  the process is probably set to "piped", which means it
+            # won't be waited on, which means exceptions won't propagate up to the
+            # main thread.  this allows them to bubble up
+            if self.process._stdin_process:
+                self.process._stdin_process.command.wait()
 
             self.log.debug("process completed")
         return self
@@ -859,8 +833,9 @@ class RunningCommand(object):
         weren't expecting to see.  if we did, we create and raise an exception
         """
         ca = self.call_args
-        exc_class = get_exc_exit_code_would_raise(code, ca["ok_code"], ca["piped"])
-        if exc_class:
+        if exc_class := get_exc_exit_code_would_raise(
+            code, ca["ok_code"], ca["piped"]
+        ):
             exc = exc_class(self.ran, self.process.stdout, self.process.stderr, ca["truncate_exc"])
             raise exc
 
@@ -974,9 +949,8 @@ class RunningCommand(object):
         try:
             return str(self)
         except UnicodeDecodeError:
-            if self.process:
-                if self.stdout:
-                    return repr(self.stdout)
+            if self.process and self.stdout:
+                return repr(self.stdout)
             return repr("")
 
     def __long__(self):
@@ -1021,12 +995,8 @@ def special_kwarg_validator(passed_kwargs, merged_kwargs, invalid_list):
 
 
 def get_fileno(ob):
-    # in py2, this will return None.  in py3, it will return an method that
-    # raises when called
-    fileno_meth = getattr(ob, "fileno", None)
-
     fileno = None
-    if fileno_meth:
+    if fileno_meth := getattr(ob, "fileno", None):
         # py3 StringIO objects will report a fileno, but calling it will raise
         # an exception
         try:
@@ -1046,10 +1016,7 @@ def ob_is_fd_based(ob):
 def ob_is_tty(ob):
     """ checks if an object (like a file-like object) is a tty.  """
     fileno = get_fileno(ob)
-    is_tty = False
-    if fileno is not None:
-        is_tty = os.isatty(fileno)
-    return is_tty
+    return os.isatty(fileno) if fileno is not None else False
 
 
 def ob_is_pipe(ob):
@@ -1085,14 +1052,14 @@ def fg_validator(passed_kwargs, merged_kwargs):
     """ fg is not valid with basically every other option """
 
     invalid = []
-    msg = """\
-_fg is invalid with nearly every other option, see warning and workaround here:
-
-    https://amoffat.github.io/sh/sections/special_arguments.html#fg"""
     whitelist = set(("env", "fg", "cwd"))
     offending = set(passed_kwargs.keys()) - whitelist
 
     if "fg" in passed_kwargs and passed_kwargs["fg"] and offending:
+        msg = """\
+_fg is invalid with nearly every other option, see warning and workaround here:
+
+    https://amoffat.github.io/sh/sections/special_arguments.html#fg"""
         invalid.append(("fg", msg))
     return invalid
 
@@ -1344,7 +1311,7 @@ class Command(object):
         kwargs = kwargs.copy()
         call_args = {}
         for parg, default in Command._call_args.items():
-            key = "_" + parg
+            key = f"_{parg}"
 
             if key in kwargs:
                 call_args[parg] = kwargs[key]
@@ -1352,12 +1319,14 @@ class Command(object):
 
         merged_args = Command._call_args.copy()
         merged_args.update(call_args)
-        invalid_kwargs = special_kwarg_validator(call_args, merged_args, Command._kwarg_validators)
+        if invalid_kwargs := special_kwarg_validator(
+            call_args, merged_args, Command._kwarg_validators
+        ):
+            exc_msg = [
+                "  %r: %s" % (kwarg, error_msg)
+                for kwarg, error_msg in invalid_kwargs
+            ]
 
-        if invalid_kwargs:
-            exc_msg = []
-            for kwarg, error_msg in invalid_kwargs:
-                exc_msg.append("  %r: %s" % (kwarg, error_msg))
             exc_msg = "\n".join(exc_msg)
             raise TypeError("Invalid special arguments:\n\n%s\n" % exc_msg)
 
@@ -1409,7 +1378,7 @@ class Command(object):
         self will call this """
         baked_args = " ".join(item.decode(DEFAULT_ENCODING) for item in self._partial_baked_args)
         if baked_args:
-            baked_args = " " + baked_args
+            baked_args = f" {baked_args}"
         return self._path.decode(DEFAULT_ENCODING) + baked_args
 
     def __enter__(self):
@@ -1441,10 +1410,7 @@ class Command(object):
 
         cmd.append(self._path)
 
-        # do we have an argument pre-processor?  if so, run it.  we need to do
-        # this early, so that args, kwargs are accurate
-        preprocessor = self._partial_call_args.get("arg_preprocess", None)
-        if preprocessor:
+        if preprocessor := self._partial_call_args.get("arg_preprocess", None):
             args, kwargs = preprocessor(args, kwargs)
 
         # here we extract the special kwargs and override any
@@ -1497,8 +1463,9 @@ class Command(object):
                 else:
                     exit_code = os.spawnve(os.P_WAIT, cmd[0], cmd, call_args["env"])
 
-            exc_class = get_exc_exit_code_would_raise(exit_code, call_args["ok_code"], call_args["piped"])
-            if exc_class:
+            if exc_class := get_exc_exit_code_would_raise(
+                exit_code, call_args["ok_code"], call_args["piped"]
+            ):
                 if IS_PY3:
                     ran = " ".join([arg.decode(DEFAULT_ENCODING, "ignore") for arg in cmd])
                 else:
@@ -1548,15 +1515,11 @@ def compile_args(a, kwargs, sep, prefix):
             if isinstance(arg, GlobResults) and not arg:
                 arg = [arg.path]
 
-            for sub_arg in arg:
-                processed_args.append(encode(sub_arg))
+            processed_args.extend(encode(sub_arg) for sub_arg in arg)
         elif isinstance(arg, dict):
             processed_args += aggregate_keywords(arg, sep, prefix, raw=True)
 
-        # see https://github.com/amoffat/sh/issues/522
-        elif arg is None or arg is False:
-            pass
-        else:
+        elif arg is not None and arg is not False:
             processed_args.append(encode(arg))
 
     # aggregate the keyword arguments
@@ -1608,11 +1571,10 @@ def aggregate_keywords(keywords, sep, prefix, raw=False):
         # cut(d="\t")
         if len(k) == 1:
             if v is not False:
-                processed.append(encode("-" + k))
+                processed.append(encode(f"-{k}"))
                 if v is not True:
                     processed.append(encode(v))
 
-        # we're doing a long arg
         else:
             if not raw:
                 k = k.replace("_", "-")
@@ -1622,8 +1584,7 @@ def aggregate_keywords(keywords, sep, prefix, raw=False):
             elif v is False:
                 pass
             elif sep is None or sep == " ":
-                processed.append(encode(prefix + k))
-                processed.append(encode(v))
+                processed.extend((encode(prefix + k), encode(v)))
             else:
                 arg = encode("%s%s%s%s" % (prefix, k, sep, v))
                 processed.append(arg)
@@ -1723,7 +1684,6 @@ def construct_streamreader_callback(process, handler):
 
 
 def get_exc_exit_code_would_raise(exit_code, ok_codes, sigpipe_ok):
-    exc = None
     success = exit_code in ok_codes
     bad_sig = -exit_code in SIGNALS_THAT_SHOULD_THROW_EXCEPTION
 
@@ -1734,9 +1694,7 @@ def get_exc_exit_code_would_raise(exit_code, ok_codes, sigpipe_ok):
         bad_sig = False
         success = True
 
-    if not success or bad_sig:
-        exc = get_rc_exc(exit_code)
-    return exc
+    return get_rc_exc(exit_code) if not success or bad_sig else None
 
 
 def handle_process_exit_code(exit_code):
@@ -2436,8 +2394,7 @@ class OProc(object):
         if self._timeout_timer:
             self._timeout_timer.cancel()
 
-        done_callback = self.call_args["done"]
-        if done_callback:
+        if done_callback := self.call_args["done"]:
             success = self.exit_code in self.call_args["ok_code"]
             done_callback(success, self.exit_code)
 
@@ -2585,12 +2542,6 @@ def output_thread(log, stdout, stderr, timeout_event, is_alive, quit_thread, sto
                 done = f.read()
                 if done:
                     poller.unregister(f)
-            elif events & POLLER_EVENT_ERROR:
-                # for some reason, we have to just ignore streams that have had an
-                # error.  i'm not exactly sure why, but don't remove this until we
-                # figure that out, and create a test for it
-                pass
-
         if timeout_event and timeout_event.is_set():
             break
 
@@ -2717,11 +2668,7 @@ def get_iter_string_reader(stdin):
 def get_iter_chunk_reader(stdin):
     def fn():
         try:
-            if IS_PY3:
-                chunk = stdin.__next__()
-            else:
-                chunk = stdin.next()
-            return chunk
+            return stdin.__next__() if IS_PY3 else stdin.next()
         except StopIteration:
             raise DoneReadingForever
 
@@ -2748,18 +2695,18 @@ def get_file_chunk_reader(stdin):
             poller = Poller()
             poller.register_read(stdin)
             changed = poller.poll(0.1)
-            ready = False
-            for fd, events in changed:
-                if events & (POLLER_EVENT_READ | POLLER_EVENT_HUP):
-                    ready = True
+            ready = any(
+                events & (POLLER_EVENT_READ | POLLER_EVENT_HUP)
+                for fd, events in changed
+            )
+
             if not ready:
                 raise NotYetReadyToRead
 
-        chunk = stdin.read(bufsize)
-        if not chunk:
-            raise DoneReadingForever
-        else:
+        if chunk := stdin.read(bufsize):
             return chunk
+        else:
+            raise DoneReadingForever
 
     return fn
 
@@ -2771,16 +2718,12 @@ def bufsize_type_to_bufsize(bf_type):
     StreamBufferer instance handle splitting our chunk on newlines """
 
     # newlines
-    if bf_type == 1:
-        bufsize = 1024
-    # unbuffered
-    elif bf_type == 0:
-        bufsize = 1
-    # or buffered by specific amount
+    if bf_type == 0:
+        return 1
+    elif bf_type == 1:
+        return 1024
     else:
-        bufsize = bf_type
-
-    return bufsize
+        return bf_type
 
 
 class StreamWriter(object):
@@ -3282,9 +3225,7 @@ class Environment(dict):
             warnings.warn("Cannot import * from sh. Please import sh or import programs individually.")
             return []
 
-        # check if we're naming a dynamically generated ReturnCode exception
-        exc = get_exc_from_name(k)
-        if exc:
+        if exc := get_exc_from_name(k):
             return exc
 
         # https://github.com/ipython/ipython/issues/2577
@@ -3292,14 +3233,10 @@ class Environment(dict):
         if k.startswith("__") and k.endswith("__"):
             raise AttributeError
 
-        # is it a custom builtin?
-        builtin = getattr(self, "b_" + k, None)
-        if builtin:
+        if builtin := getattr(self, f"b_{k}", None):
             return builtin
 
-        # is it a command?
-        cmd = resolve_command(k, self.baked_args)
-        if cmd:
+        if cmd := resolve_command(k, self.baked_args):
             return cmd
 
         # how about an environment variable?
@@ -3342,8 +3279,7 @@ class Contrib(ModuleType):  # pragma: no cover
                 if not cmd:
                     raise CommandNotFound(name)
 
-                new_cmd = fn(cmd)
-                return new_cmd
+                return fn(cmd)
 
             setattr(cls, name, cmd_getter)
             return fn
@@ -3351,16 +3287,15 @@ class Contrib(ModuleType):  # pragma: no cover
         return wrapper1
 
 
-mod_name = __name__ + ".contrib"
+mod_name = f'{__name__}.contrib'
 contrib = Contrib(mod_name)
 sys.modules[mod_name] = contrib
 
 
 @contrib("git")
-def git(orig):  # pragma: no cover
+def git(orig):    # pragma: no cover
     """ most git commands play nicer without a TTY """
-    cmd = orig.bake(_tty_out=False)
-    return cmd
+    return orig.bake(_tty_out=False)
 
 
 @contrib("sudo")
@@ -3371,17 +3306,12 @@ def sudo(orig):  # pragma: no cover
     prompt = "[sudo] password for %s: " % getpass.getuser()
 
     def stdin():
-        pw = getpass.getpass(prompt=prompt) + "\n"
-        yield pw
+        yield getpass.getpass(prompt=prompt) + "\n"
 
     def process(a, kwargs):
         password = kwargs.pop("password", None)
 
-        if password is None:
-            pass_getter = stdin()
-        else:
-            pass_getter = password.rstrip("\n") + "\n"
-
+        pass_getter = stdin() if password is None else password.rstrip("\n") + "\n"
         kwargs["_in"] = pass_getter
         return a, kwargs
 
@@ -3415,8 +3345,7 @@ def ssh(orig):  # pragma: no cover
 
         @property
         def cur_line(self):
-            line = "".join(self.line_chars)
-            return line
+            return "".join(self.line_chars)
 
     class SSHInteract(object):
         def __init__(self, prompt_match, pass_getter, out_handler, login_success):
@@ -3607,8 +3536,7 @@ def register_importer():
 
 
 def fetch_module_from_frame(name, frame):
-    mod = frame.f_locals.get(name, frame.f_globals.get(name, None))
-    return mod
+    return frame.f_locals.get(name, frame.f_globals.get(name, None))
 
 
 class ModuleImporterFromVariables(object):
