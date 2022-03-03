@@ -127,7 +127,7 @@ def requires_progs(*progs):
             missing.append(prog)
 
     friendly_missing = ", ".join(missing)
-    return skipUnless(len(missing) == 0, "Missing required system programs: %s"
+    return skipUnless(not missing, "Missing required system programs: %s"
                       % friendly_missing)
 
 
@@ -602,7 +602,7 @@ print("hi")
         # security vulnerabilities.  python 2.7, for example, doesn't set CLOEXEC on tempfile.TemporaryFile()s
         #
         # https://www.python.org/dev/peps/pep-0446/
-        tmp = [tempfile.TemporaryFile() for i in range(10)]
+        tmp = [tempfile.TemporaryFile() for _ in range(10)]
         for t in tmp:
             flags = fcntl.fcntl(t.fileno(), fcntl.F_GETFD)
             flags &= ~fcntl.FD_CLOEXEC
@@ -626,7 +626,7 @@ print(len(os.listdir("/dev/fd")))
         # security vulnerabilities.  python 2.7, for example, doesn't set CLOEXEC on tempfile.TemporaryFile()s
         #
         # https://www.python.org/dev/peps/pep-0446/
-        tmp = [tempfile.TemporaryFile() for i in range(10)]
+        tmp = [tempfile.TemporaryFile() for _ in range(10)]
         for t in tmp:
             flags = fcntl.fcntl(t.fileno(), fcntl.F_GETFD)
             flags &= ~fcntl.FD_CLOEXEC
@@ -648,7 +648,7 @@ print(os.listdir("/dev/fd"))
         # security vulnerabilities.  python 2.7, for example, doesn't set CLOEXEC on tempfile.TemporaryFile()s
         #
         # https://www.python.org/dev/peps/pep-0446/
-        tmp = [tempfile.TemporaryFile() for i in range(10)]
+        tmp = [tempfile.TemporaryFile() for _ in range(10)]
         for t in tmp:
             flags = fcntl.fcntl(t.fileno(), fcntl.F_GETFD)
             flags &= ~fcntl.FD_CLOEXEC
@@ -986,9 +986,7 @@ print(sys.argv[1])
         from sh import ls, ErrorReturnCode_1, ErrorReturnCode_2
         p = ls("/ofawjeofj", _bg=True, _bg_exc=False)  # should not raise
 
-        exc_to_test = ErrorReturnCode_2
-        if IS_MACOS:
-            exc_to_test = ErrorReturnCode_1
+        exc_to_test = ErrorReturnCode_1 if IS_MACOS else ErrorReturnCode_2
         self.assertRaises(exc_to_test, p.wait)  # should raise
 
     def test_with_context(self):
@@ -1533,9 +1531,7 @@ for i in range(42):
     sys.stdout.flush()
 """)
 
-        out = []
-        for line in python(py.name, _iter=True):
-            out.append(int(line.strip()))
+        out = [int(line.strip()) for line in python(py.name, _iter=True)]
         self.assertEqual(len(out), 42)
         self.assertEqual(sum(out), 861)
 
@@ -1592,15 +1588,11 @@ for i in range(42):
     sys.stderr.write(str(i)+"\\n")
 """)
 
-        out = []
-        for line in python("-u", py.name, _iter="err"):
-            out.append(line)
+        out = list(python("-u", py.name, _iter="err"))
         self.assertEqual(len(out), 42)
 
         # verify that nothing is going to stdout
-        out = []
-        for line in python("-u", py.name, _iter="out"):
-            out.append(line)
+        out = list(python("-u", py.name, _iter="out"))
         self.assertEqual(len(out), 0)
 
     def test_sigpipe(self):
@@ -1680,7 +1672,7 @@ while True:
             last_received = now
 
         self.assertEqual("ANDREW", letters)
-        self.assertTrue(all([t > .3 for t in times]))
+        self.assertTrue(all(t > .3 for t in times))
 
     def test_generator_and_callback(self):
         py = create_tmp_test("""
@@ -2059,9 +2051,7 @@ exit(1)
         test = "/á"
 
         # coerce to unicode
-        if IS_PY3:
-            pass
-        else:
+        if not IS_PY3:
             test = test.decode("utf8")
 
         self.assertRaises(ErrorReturnCode, ls, test)
@@ -2750,7 +2740,7 @@ exit(1)
         with ulimit(resource.RLIMIT_NOFILE, 2048):
             cutoff_fd = 1024
             pipes = []
-            for i in xrange(cutoff_fd):
+            for _ in xrange(cutoff_fd):
                 master, slave = os.pipe()
                 pipes.append((master, slave))
                 if slave >= cutoff_fd:
@@ -2802,10 +2792,7 @@ print("cool")
                     opt_collection.append(pair)
 
             for combo in product(*all_opts):
-                opt_dict = {}
-                for key, val in combo:
-                    opt_dict[key] = val
-                yield opt_dict
+                yield dict(combo)
 
         test_pid = os.getpid()
 
@@ -2960,7 +2947,7 @@ print("cool")
 print("cool")
 """)
         p = python(py.name, _iter=True)
-        for i in range(100):
+        for _ in range(100):
             try:
                 next(p)
             except StopIteration:
